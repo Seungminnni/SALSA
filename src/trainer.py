@@ -467,12 +467,17 @@ class Trainer(object):
                 logger.info("New best score for %s: %.6f" % (metric, scores[metric]))
                 self.save_checkpoint("best-%s" % metric)
 
-        # Manually adding percs diff model saving. 
-        currPercQ = float(ast.literal_eval(scores["valid_lattice_percs_diff"])[0])
-        if currPercQ > self.best_10percQ:
-            self.best_10percQ = currPercQ
-            logger.info("New best score for toleranc=10percQ acc: %.6f" % (currPercQ))
-            self.save_checkpoint("best-10percQ")
+        # Manually adding percs diff model saving.
+        # Guard against missing or malformed 'valid_lattice_percs_diff' to avoid crashing during training.
+        try:
+            if "valid_lattice_percs_diff" in scores and scores["valid_lattice_percs_diff"]:
+                currPercQ = float(ast.literal_eval(scores["valid_lattice_percs_diff"])[0])
+                if currPercQ > self.best_10percQ:
+                    self.best_10percQ = currPercQ
+                    logger.info("New best score for toleranc=10percQ acc: %.6f" % (currPercQ))
+                    self.save_checkpoint("best-10percQ")
+        except Exception as exc:
+            logger.warning("Skipping best-10percQ update due to error: %s", exc)
         
 
     def end_epoch(self, scores):
