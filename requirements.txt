@@ -166,3 +166,10 @@ https://repo.anaconda.com/pkgs/main/linux-64/scikit-learn-0.24.2-py39ha9443f7_0.
 https://conda.anaconda.org/pytorch/linux-64/torchaudio-0.9.0-py39.tar.bz2
 https://repo.anaconda.com/pkgs/main/noarch/seaborn-0.11.2-pyhd3eb1b0_0.conda
 https://conda.anaconda.org/conda-forge/linux-64/torchvision-0.10.0-py39cuda112hc5182df_0_cuda.tar.bz2
+
+# Additional runtime / optional dependencies
+# - matplotlib is required for `plot_metrics.py` (already included above).
+# - NVIDIA Apex (optional) enables native mixed-precision training. It must be installed from source:
+#   https://github.com/NVIDIA/apex (follow their install instructions; not always available via conda).
+# - git-lfs (optional) is recommended to store large checkpoint files outside git history. Install system-wide and run `git lfs install`.
+# - If you prefer a pip-style requirements list, consider adding a `requirements-pip.txt` with package names and versions.
