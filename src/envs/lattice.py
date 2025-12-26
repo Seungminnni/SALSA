@@ -307,6 +307,38 @@ class LatticeEnvironment(object):
             "--hamming", type=int, default=3, help="if >0, will set exactly this many bits to 1"
         )
 
+        # Hallucination key (obfuscation)
+        parser.add_argument(
+            "--use_hallucination",
+            type=bool_flag,
+            default=False,
+            help="Use hallucination key s' derived from secret and k."
+        )
+        parser.add_argument(
+            "--hallucination_k_seed",
+            type=int,
+            default=-1,
+            help="Seed for hallucination k generation (-1 for random)."
+        )
+        parser.add_argument(
+            "--hallucination_k_bits",
+            type=int,
+            default=128,
+            help="Number of bits in hallucination k."
+        )
+        parser.add_argument(
+            "--hallucination_degrees",
+            type=str,
+            default="1,3,5",
+            help="Maclaurin degrees for f_k(s) (comma-separated)."
+        )
+        parser.add_argument(
+            "--hallucination_coeff_choices",
+            type=str,
+            default="-1,1",
+            help="Coefficient choices for f_k(s) (comma-separated)."
+        )
+
 
         # Bases
         parser.add_argument(

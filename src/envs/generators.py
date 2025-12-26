@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from abc import ABC, abstractmethod
+import hashlib
 import numpy as np
 import math
 from scipy.linalg import circulant
@@ -58,6 +59,23 @@ class RLWE(Generator):
         self.percQ_bound = params.percQ_bound
         self.correctQ = params.correctQ
         self.q2_correction = np.vectorize(self.q2_correct)
+        # Hallucination key params (optional).
+        self.use_hallucination = getattr(params, "use_hallucination", False)
+        self.hallucination_k_seed = getattr(params, "hallucination_k_seed", -1)
+        self.hallucination_k_bits = getattr(params, "hallucination_k_bits", 128)
+        self.hallucination_degrees = [
+            d for d in self._parse_int_list(getattr(params, "hallucination_degrees", "1,3,5")) if d > 0
+        ]
+        if not self.hallucination_degrees:
+            self.hallucination_degrees = [1]
+        self.hallucination_coeff_choices = self._parse_int_list(
+            getattr(params, "hallucination_coeff_choices", "-1,1")
+        )
+        if not self.hallucination_coeff_choices:
+            self.hallucination_coeff_choices = [-1, 1]
+        self.hallucination_k = None
+        self.hallucination_coeffs = None
+        self.secret_raw = None
 
         # if density is greater than 0, set hamming weight by it. 
         if self.density > 0: 
@@ -79,8 +97,16 @@ class RLWE(Generator):
             self.reuse_samples, self.times_reused, self.reuse_counter = None, None, None
 
     def getSecrets(self, params):
-        secrets = [self.genSecretKey(params.secrettype, self.N)]
-        return secrets
+        s = self.genSecretKey(params.secrettype, self.N)
+        if not self.use_hallucination:
+            return [s]
+        # Apply k-based obfuscation to produce s'.
+        k_bits, prg = self._make_hallucination_k()
+        s_prime, coeffs = self._maclaurin_obfuscate(s, prg)
+        self.secret_raw = s
+        self.hallucination_k = k_bits
+        self.hallucination_coeffs = coeffs
+        return [s_prime]
 
     def genSecretKey(self, secret, N):
         if secret == "b":
@@ -106,6 +132,54 @@ class RLWE(Generator):
             # sample secret uniformly from {-1, 0, 1}
             s = self.rng.integers(-1, 1, endpoint=True, size=N)
         return s
+
+    @staticmethod
+    def _parse_int_list(value):
+        if isinstance(value, (list, tuple, np.ndarray)):
+            return [int(v) for v in value]
+        if value is None:
+            return []
+        if isinstance(value, str):
+            parts = [p.strip() for p in value.split(",") if p.strip() != ""]
+            return [int(p) for p in parts]
+        return [int(value)]
+
+    def _make_hallucination_k(self):
+        bits = self.hallucination_k_bits if self.hallucination_k_bits > 0 else 128
+        if self.hallucination_k_seed is not None and self.hallucination_k_seed >= 0:
+            rng = np.random.default_rng(self.hallucination_k_seed)
+        else:
+            rng = np.random.default_rng()
+        k_bits = rng.integers(0, 2, size=bits, dtype=np.int64)
+        digest = hashlib.sha256(k_bits.tobytes()).digest()
+        seed_int = int.from_bytes(digest[:8], "big", signed=False)
+        prg = np.random.default_rng(seed_int)
+        return k_bits, prg
+
+    def _negacyclic_convolve(self, a, b):
+        # Negacyclic convolution: mod x^N + 1 to match get_sample().
+        conv = np.convolve(a, b)
+        n = len(a)
+        res = conv[:n].astype(np.int64, copy=True)
+        tail = conv[n:]
+        if tail.size:
+            res[:tail.size] -= tail
+        return res % self.Q
+
+    def _maclaurin_obfuscate(self, s, rng):
+        s = s.astype(np.int64)
+        s_prime = np.zeros_like(s, dtype=np.int64)
+        coeffs = {}
+        for d in self.hallucination_degrees:
+            coeffs[d] = int(rng.choice(self.hallucination_coeff_choices))
+            if d == 1:
+                term = s.copy()
+            else:
+                term = s.copy()
+                for _ in range(d - 1):
+                    term = self._negacyclic_convolve(term, s)
+            s_prime = (s_prime + coeffs[d] * term) % self.Q
+        return s_prime, coeffs
 
     def generate(self, rng, idx, currN=-1):
         if self.reuse:
