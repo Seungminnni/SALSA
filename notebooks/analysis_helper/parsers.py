@@ -207,6 +207,9 @@ def parse(env, xp, indics, path, indicator="valid_lattice"):
         nanfound = False
         midsecret = False
         res["curr_epoch"]=-1
+        res["found_epoch"] = -1
+        res["found_time"] = None
+        res["found_recover_method"] = None
         res["train_time"]=0
         res["eval_time"]=0
         nb_sig10 = 0
@@ -320,17 +323,46 @@ def parse(env, xp, indics, path, indicator="valid_lattice"):
                     #    idx_prop_ones = curr_epoch
                     
                 elif line.find(" bits in secret 0 have been recovered!") >=0:
-                    # Figure out which method found it. 
+                    # Figure out which method found it and record the epoch/time
+                    dt, _ = get_start_time(line)
+                    found_epoch = res.get("curr_epoch", -1) if res.get("curr_epoch", -1) >= 0 else epoch
+                    res["found_epoch"] = found_epoch
+                    res["found_time"] = dt
+                    # Figure out method
                     if line.find('Distinguisher') >=0:
                         if 'd' not in recover_methods:
                             recover_methods.append('d')
+                        if res.get("found_recover_method") is None:
+                            res["found_recover_method"] = 'd'
                     elif line.find('K') >=0:
-                        kval = int(line.split('=')[-1].rstrip())
-                        if kval not in recover_methods:
-                            recover_methods.append(kval)
+                        try:
+                            kval = int(line.split('=')[-1].rstrip())
+                            if kval not in recover_methods:
+                                recover_methods.append(kval)
+                            if res.get("found_recover_method") is None:
+                                res["found_recover_method"] = kval
+                        except Exception:
+                            pass
+                    # mark secret as found
+                    secret = True
                     
                 # see if secret was found:
                 elif (line.find('Found secret match - ending experiment') > 0) or (line.find('secret match')>0):
+                    # Record found epoch/time and method if possible
+                    dt, _ = get_start_time(line)
+                    found_epoch = res.get("curr_epoch", -1) if res.get("curr_epoch", -1) >= 0 else epoch
+                    res["found_epoch"] = found_epoch
+                    res["found_time"] = dt
+                    # try to extract K if present
+                    if 'K=' in line:
+                        try:
+                            kval = int(line.split('K=')[-1].split()[0].strip())
+                            if kval not in recover_methods:
+                                recover_methods.append(kval)
+                            if res.get("found_recover_method") is None:
+                                res["found_recover_method"] = kval
+                        except Exception:
+                            pass
                     secret=True
                     prop_ones.append(1)
                     prop_zeros.append(1)
@@ -398,6 +430,10 @@ def parse(env, xp, indics, path, indicator="valid_lattice"):
         res["best_xeloss"] = "{:.2f}".format(best_xel)
         res["train_loss"]=train_loss
         res["recover_method"] = recover_methods
+        # found info
+        res["found_epoch"] = res.get("found_epoch", -1)
+        res["found_time"] = res.get("found_time", None)
+        res["found_recover_method"] = res.get("found_recover_method", None)
         #print(prop_ones)
         res["prop_ones"] = prop_ones
         res["prop_zeros"] = prop_zeros
