@@ -338,6 +338,12 @@ class LatticeEnvironment(object):
             default="-1,1",
             help="Coefficient choices for f_k(s) (comma-separated)."
         )
+        parser.add_argument(
+            "--hallucination_tau",
+            type=float,
+            default=1.0,
+            help="Tolerance tau for s' vs s distance metrics."
+        )
 
 
         # Bases
