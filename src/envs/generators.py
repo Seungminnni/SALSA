@@ -6,6 +6,7 @@
 
 from abc import ABC, abstractmethod
 import hashlib
+import os
 import numpy as np
 import math
 from scipy.linalg import circulant
@@ -101,8 +102,8 @@ class RLWE(Generator):
         if not self.use_hallucination:
             return [s]
         # Apply k-based obfuscation to produce s'.
-        k_bits, prg = self._make_hallucination_k()
-        s_prime, coeffs = self._maclaurin_obfuscate(s, prg)
+        k_bits, k_bytes = self._make_hallucination_k()
+        s_prime, coeffs = self._maclaurin_obfuscate(s, k_bytes)
         self.secret_raw = s
         self.hallucination_k = k_bits
         self.hallucination_coeffs = coeffs
@@ -146,15 +147,41 @@ class RLWE(Generator):
 
     def _make_hallucination_k(self):
         bits = self.hallucination_k_bits if self.hallucination_k_bits > 0 else 128
+        nbytes = (bits + 7) // 8
         if self.hallucination_k_seed is not None and self.hallucination_k_seed >= 0:
-            rng = np.random.default_rng(self.hallucination_k_seed)
+            seed_int = int(self.hallucination_k_seed)
+            seed_len = max(1, (seed_int.bit_length() + 7) // 8)
+            seed_bytes = seed_int.to_bytes(seed_len, "big", signed=False)
+            k_bytes = hashlib.shake_256(b"HKD|k|" + seed_bytes).digest(nbytes)
         else:
-            rng = np.random.default_rng()
-        k_bits = rng.integers(0, 2, size=bits, dtype=np.int64)
-        digest = hashlib.sha256(k_bits.tobytes()).digest()
-        seed_int = int.from_bytes(digest[:8], "big", signed=False)
-        prg = np.random.default_rng(seed_int)
-        return k_bits, prg
+            k_bytes = os.urandom(nbytes)
+        k_bits = np.unpackbits(np.frombuffer(k_bytes, dtype=np.uint8))[:bits].astype(np.int64)
+        return k_bits, k_bytes
+
+    def _xof_uint32_stream(self, k_bytes, label):
+        counter = 0
+        buf = b""
+        while True:
+            if len(buf) < 4:
+                h = hashlib.shake_256()
+                h.update(b"HKD|" + label + b"|" + counter.to_bytes(4, "big") + b"|" + k_bytes)
+                buf += h.digest(64)
+                counter += 1
+            val = int.from_bytes(buf[:4], "big")
+            buf = buf[4:]
+            yield val
+
+    def _xof_choice_indices(self, k_bytes, label, count, mod):
+        if mod <= 0:
+            raise ValueError("mod must be positive")
+        limit = (1 << 32) - ((1 << 32) % mod)
+        out = []
+        for v in self._xof_uint32_stream(k_bytes, label):
+            if v < limit:
+                out.append(v % mod)
+                if len(out) >= count:
+                    break
+        return out
 
     def _negacyclic_convolve(self, a, b):
         # Negacyclic convolution: mod x^N + 1 to match get_sample().
@@ -166,12 +193,16 @@ class RLWE(Generator):
             res[:tail.size] -= tail
         return res % self.Q
 
-    def _maclaurin_obfuscate(self, s, rng):
+    def _maclaurin_obfuscate(self, s, k_bytes):
         s = s.astype(np.int64)
         s_prime = np.zeros_like(s, dtype=np.int64)
         coeffs = {}
+        coeff_idx = self._xof_choice_indices(
+            k_bytes, b"coeff", len(self.hallucination_degrees), len(self.hallucination_coeff_choices)
+        )
         for d in self.hallucination_degrees:
-            coeffs[d] = int(rng.choice(self.hallucination_coeff_choices))
+            idx = coeff_idx.pop(0)
+            coeffs[d] = int(self.hallucination_coeff_choices[idx])
             if d == 1:
                 term = s.copy()
             else:
