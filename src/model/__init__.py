@@ -76,16 +76,5 @@ def build_modules(env, params):
     if not params.cpu:
         for v in modules.values():
             v.cuda()
-        # debug: log device and memory usage
-        for k,v in modules.items():
-            try:
-                dev = next(v.parameters()).device
-            except StopIteration:
-                dev = 'no-params'
-            logger.info(f"Module {k} device: {dev}")
-        try:
-            logger.info(f"CUDA available: {torch.cuda.is_available()}, current device: {torch.cuda.current_device()}, memory allocated: {torch.cuda.memory_allocated():,}")
-        except Exception as e:
-            logger.warning(f"Error querying CUDA memory: {e}")
 
     return modules

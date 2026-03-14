@@ -127,12 +127,11 @@ class Evaluator(object):
         """ Master function to run this rather than having it in like 5 different places. """
         # Run beam generation to get output. 
         encoded = encoder("fwd", x=x1_, lengths=len1_, causal=False)
-        max_beam_len = getattr(self.params, 'max_output_len', 4096)
         _, _, generations= decoder.generate_beam(encoded.transpose(0, 1), len1_,
                                                     beam_size=self.params.beam_size,
                                                     length_penalty=self.params.beam_length_penalty,
                                                     early_stopping=self.params.beam_early_stopping,
-                                                    max_len=max_beam_len)
+                                                    max_len=4096)
         # Analyze beam output
         inputs = []
         for i in range(len(generations)):
@@ -192,9 +191,7 @@ class Evaluator(object):
 
     def eval_secret(self, sec_idx, K, encoder, decoder):
         ''' Function to do special secret guessing. '''
-        if getattr(self.params, "use_hallucination", False) and getattr(self.env.generator, "secret_raw", None) is not None:
-            return self._eval_secret_hallucination(sec_idx, K, encoder, decoder)
-
+    
         # do the secret value
         N = len(self.env.generator.secrets[sec_idx]) # sec_idx will always be 0. 
         specialA = np.identity(N, dtype=np.int64) * K
@@ -229,29 +226,9 @@ class Evaluator(object):
         invert = np.vectorize(lambda x: 1 - x)
 
         # 3 methods of testing for matching: mean, mode, and softmax mean
-        pred_arr = np.array(pred_final)
-        try:
-            pred_bin1 = np.where(pred_arr > np.mean(pred_arr), 0, 1)
-        except Exception as e:
-            logger.warning(f"Error computing pred_bin1: {e}; pred_final={pred_final}")
-            pred_bin1 = np.zeros_like(pred_arr, dtype=int)
-
-        # robust mode computation (handle scalar/empty/shape changes)
-        try:
-            mode_res = stats.mode(pred_arr)
-            mode_vals = np.array(mode_res.mode).ravel()
-            mode_val = mode_vals[0] if mode_vals.size > 0 else int(mode_res.mode)
-        except Exception as e:
-            logger.warning(f"Error computing mode for pred_final: {e}; pred_final={pred_final}")
-            mode_val = int(pred_arr[0]) if pred_arr.size > 0 else 0
-        pred_bin2 = np.where(pred_arr != mode_val, 0, 1)
-
-        try:
-            pred_soft_arr = np.array(pred_softmax)
-            pred_bin3 = np.where(pred_soft_arr > np.mean(pred_soft_arr), 0, 1)
-        except Exception as e:
-            logger.warning(f"Error computing pred_bin3: {e}; pred_softmax={pred_softmax}")
-            pred_bin3 = np.zeros_like(pred_arr, dtype=int)
+        pred_bin1 = np.vectorize(lambda x: 0 if x > np.mean(pred_final) else 1)(pred_final) 
+        pred_bin2 = np.vectorize(lambda x: 0 if x != stats.mode(pred_final)[0][0] else 1)(pred_final)
+        pred_bin3 = np.vectorize(lambda x: 0 if x > np.mean(pred_softmax) else 1)(pred_softmax)
 
         bin1_match = sum((pred_bin1 == self.env.generator.secrets[sec_idx]).astype(int))
         bin2_match = sum((pred_bin2 == self.env.generator.secrets[sec_idx]).astype(int))
@@ -273,80 +250,6 @@ class Evaluator(object):
             logger.info(f'Best secret guess for {sec_idx}: {str(list(match_vecs[argmax]))}')
             if self.trainer.secret_match[sec_idx] != True:
                 self.trainer.secret_match[sec_idx] = False
-
-    def _eval_secret_hallucination(self, sec_idx, K, encoder, decoder):
-        q = self.params.Q
-        s_prime = np.array(self.env.generator.secrets[sec_idx], dtype=np.int64) % q
-        s_raw = np.array(self.env.generator.secret_raw, dtype=np.int64) % q
-
-        if not hasattr(self, "_hallucination_logged"):
-            self._hallucination_logged = set()
-        log_key = (self.trainer.epoch, sec_idx)
-        if log_key not in self._hallucination_logged:
-            self._hallucination_logged.add(log_key)
-            diff = self._centered_mod(s_prime - s_raw, q)
-            mae = float(np.mean(np.abs(diff)))
-            rmse = float(np.sqrt(np.mean(diff.astype(np.float64) ** 2)))
-            tau = getattr(self.params, "hallucination_tau", 1.0)
-            tol_acc = float(np.mean(np.abs(diff) <= tau))
-            logger.info(
-                "s' vs s (centered mod Q): MAE=%.6f, RMSE=%.6f, TolAcc(tau=%.3f)=%.6f",
-                mae,
-                rmse,
-                tau,
-                tol_acc,
-            )
-
-        if self.trainer.secret_match[sec_idx]:
-            return
-
-        try:
-            k_inv = pow(int(K), -1, q)
-        except ValueError:
-            logger.info("Skipping hallucination eval for K=%s (no inverse mod Q=%s).", K, q)
-            return
-
-        N = len(s_prime)
-        specialA = np.identity(N, dtype=np.int64) * K
-        specialB = np.inner(specialA, s_prime) % q
-
-        x, y, nb_eqs = self.encode_data(sec_idx, specialA, specialB)
-
-        pred_final = []
-        for k in range(0, len(x), self.params.batch_size):
-            x1, len1, x2, len2, _y = self.batch_data(
-                x[k:k+self.params.batch_size],
-                y[k:k+self.params.batch_size],
-                nb_eqs[k:k+self.params.batch_size],
-            )
-            x1_, len1_, x2, len2, y_ = to_cuda(x1, len1, x2, len2, _y)
-            beam_log = self.run_beam_generation(x1, x1_, x2, len1, len1_, len2, encoder, decoder)
-            for b in beam_log:
-                try:
-                    pred_final.append(self.env.output_encoder.decode(beam_log[b]['hyps'][0][0][::-1])[0])
-                except Exception:
-                    pred_final.append(-1)
-
-        if len(pred_final) == 0:
-            logger.info("Hallucination eval failed to decode predictions for K=%s.", K)
-            return
-
-        pred_arr = np.array(pred_final, dtype=np.int64) % q
-        s_hat = (pred_arr * k_inv) % q
-
-        if np.array_equal(s_hat, s_prime):
-            logger.info(f'All bits in secret {sec_idx} have been recovered!  K={K}')
-            self.trainer.secret_match[sec_idx] = True
-            return
-
-        match = int(np.sum(s_hat == s_prime))
-        logger.info(f"Secret matching (s'): {match}/{N} entries matched for secret {sec_idx}, K={K}")
-        if self.trainer.secret_match[sec_idx] != True:
-            self.trainer.secret_match[sec_idx] = False
-
-    @staticmethod
-    def _centered_mod(values, q):
-        return ((values + q // 2) % q) - q // 2
             
     ##### CODE TO RUN THE DISTINGUISHER
     def get_distinguisher_samples(self, i, g, num_samples, random, sec_idx):
@@ -892,8 +795,6 @@ class Evaluator(object):
             percentiles.append(pval)
         # Get the > 100% values
         percentiles.append(100) # Everything else is above 1.
-        # convert to plain Python floats so that ast.literal_eval can parse the string safely
-        percentiles = [float(p) for p in percentiles]
         percQ10 = percentiles[0]
         scores[f"{data_type}_{task}_percs_diff"] = str(percentiles) # can use this as a stopping critirion if you want. 
         logger.info(f'percentiles of %Q difference between tgt and hyp: {str(list(percentiles))}')
@@ -926,3 +827,4 @@ class Evaluator(object):
         if percQ10 >= 25: # Not worth it running before this, numSamples will be too large. 
             for i in range(len(self.env.generator.secrets)):
                 self.run_distinguisher(i, scores, encoder, decoder)
+

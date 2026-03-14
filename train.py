@@ -12,7 +12,6 @@ import torch
 import os
 import pickle
 import sys
-import atexit
 
 import src
 from src.slurm import init_signal_handler, init_distributed_mode
@@ -24,29 +23,6 @@ from src.evaluator import Evaluator
 
 
 np.seterr(all='raise')
-
-
-
-def _register_metrics_plot(params, logger):
-    if not params.is_master:
-        return
-
-    log_path = os.path.join(params.dump_path, 'train.log')
-    safe_exp_name = str(params.exp_name).replace('/', '_').replace(chr(92), '_')
-    safe_exp_id = str(params.exp_id).replace('/', '_').replace(chr(92), '_')
-    out_name = f"metrics_{safe_exp_name}_{safe_exp_id}.png"
-    out_path = os.path.join(os.getcwd(), out_name)
-
-    def _on_exit():
-        try:
-            from plot_metrics import plot_metrics
-            saved_path = plot_metrics(log_path, out_path)
-            if saved_path:
-                logger.info("Saved metrics plot to %s", saved_path)
-        except Exception as exc:
-            logger.warning("Metrics plot generation failed: %s", exc)
-
-    atexit.register(_on_exit)
 
 
 def get_parser():
@@ -246,7 +222,6 @@ def main(params):
     # initialize experiment / SLURM signal handler for time limit / pre-emption
     init_distributed_mode(params)
     logger = initialize_exp(params)
-    _register_metrics_plot(params, logger)
     if params.is_slurm_job:
         init_signal_handler()
 
@@ -335,28 +310,6 @@ if __name__ == '__main__':
         if params.exp_id == '':
             params.exp_id = 'debug_%08i' % random.randint(0, 100000000)
         params.debug_slurm = True
-
-    # Auto-adjust model size for larger N per paper (STRICT override, option A):
-    # For n < 100 use 1024/512 embeddings and 16/4 heads (encoder/decoder)
-    # For n >= 100 use 1536/512 embeddings and 32/4 heads (encoder/decoder)
-    # This STRICTLY forces values to match the paper even if the user supplied other values.
-    #인코더 디코더 및 임베딩 차원 조정 조건마다 적용되도록 설정
-    try:
-        if params.N >= 100:
-            params.enc_emb_dim = 1536
-            params.n_enc_heads = 32
-            params.dec_emb_dim = 512
-            params.n_dec_heads = 4
-            print(f"[AUTO] N >= 100: forcing enc_emb_dim={params.enc_emb_dim}, n_enc_heads={params.n_enc_heads}, dec_emb_dim={params.dec_emb_dim}, n_dec_heads={params.n_dec_heads}", file=sys.stderr)
-        else:
-            params.enc_emb_dim = 1024
-            params.n_enc_heads = 16
-            params.dec_emb_dim = 512
-            params.n_dec_heads = 4
-            print(f"[AUTO] N < 100: forcing enc_emb_dim={params.enc_emb_dim}, n_enc_heads={params.n_enc_heads}, dec_emb_dim={params.dec_emb_dim}, n_dec_heads={params.n_dec_heads}", file=sys.stderr)
-    except Exception:
-        # be robust to missing attributes
-        pass
 
     # check parameters
     check_model_params(params)

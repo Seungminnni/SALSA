@@ -5,8 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 from abc import ABC, abstractmethod
-import hashlib
-import os
 import numpy as np
 import math
 from scipy.linalg import circulant
@@ -60,23 +58,6 @@ class RLWE(Generator):
         self.percQ_bound = params.percQ_bound
         self.correctQ = params.correctQ
         self.q2_correction = np.vectorize(self.q2_correct)
-        # Hallucination key params (optional).
-        self.use_hallucination = getattr(params, "use_hallucination", False)
-        self.hallucination_k_seed = getattr(params, "hallucination_k_seed", -1)
-        self.hallucination_k_bits = getattr(params, "hallucination_k_bits", 128)
-        self.hallucination_degrees = [
-            d for d in self._parse_int_list(getattr(params, "hallucination_degrees", "1,3,5")) if d > 0
-        ]
-        if not self.hallucination_degrees:
-            self.hallucination_degrees = [1]
-        self.hallucination_coeff_choices = self._parse_int_list(
-            getattr(params, "hallucination_coeff_choices", "-1,1")
-        )
-        if not self.hallucination_coeff_choices:
-            self.hallucination_coeff_choices = [-1, 1]
-        self.hallucination_k = None
-        self.hallucination_coeffs = None
-        self.secret_raw = None
 
         # if density is greater than 0, set hamming weight by it. 
         if self.density > 0: 
@@ -98,16 +79,8 @@ class RLWE(Generator):
             self.reuse_samples, self.times_reused, self.reuse_counter = None, None, None
 
     def getSecrets(self, params):
-        s = self.genSecretKey(params.secrettype, self.N)
-        if not self.use_hallucination:
-            return [s]
-        # Apply k-based obfuscation to produce s'.
-        k_bits, k_bytes = self._make_hallucination_k()
-        s_prime, coeffs = self._maclaurin_obfuscate(s, k_bytes)
-        self.secret_raw = s
-        self.hallucination_k = k_bits
-        self.hallucination_coeffs = coeffs
-        return [s_prime]
+        secrets = [self.genSecretKey(params.secrettype, self.N)]
+        return secrets
 
     def genSecretKey(self, secret, N):
         if secret == "b":
@@ -133,84 +106,6 @@ class RLWE(Generator):
             # sample secret uniformly from {-1, 0, 1}
             s = self.rng.integers(-1, 1, endpoint=True, size=N)
         return s
-
-    @staticmethod
-    def _parse_int_list(value):
-        if isinstance(value, (list, tuple, np.ndarray)):
-            return [int(v) for v in value]
-        if value is None:
-            return []
-        if isinstance(value, str):
-            parts = [p.strip() for p in value.split(",") if p.strip() != ""]
-            return [int(p) for p in parts]
-        return [int(value)]
-
-    def _make_hallucination_k(self):
-        bits = self.hallucination_k_bits if self.hallucination_k_bits > 0 else 128
-        nbytes = (bits + 7) // 8
-        if self.hallucination_k_seed is not None and self.hallucination_k_seed >= 0:
-            seed_int = int(self.hallucination_k_seed)
-            seed_len = max(1, (seed_int.bit_length() + 7) // 8)
-            seed_bytes = seed_int.to_bytes(seed_len, "big", signed=False)
-            k_bytes = hashlib.shake_256(b"HKD|k|" + seed_bytes).digest(nbytes)
-        else:
-            k_bytes = os.urandom(nbytes)
-        k_bits = np.unpackbits(np.frombuffer(k_bytes, dtype=np.uint8))[:bits].astype(np.int64)
-        return k_bits, k_bytes
-
-    def _xof_uint32_stream(self, k_bytes, label):
-        counter = 0
-        buf = b""
-        while True:
-            if len(buf) < 4:
-                h = hashlib.shake_256()
-                h.update(b"HKD|" + label + b"|" + counter.to_bytes(4, "big") + b"|" + k_bytes)
-                buf += h.digest(64)
-                counter += 1
-            val = int.from_bytes(buf[:4], "big")
-            buf = buf[4:]
-            yield val
-
-    def _xof_choice_indices(self, k_bytes, label, count, mod):
-        if mod <= 0:
-            raise ValueError("mod must be positive")
-        limit = (1 << 32) - ((1 << 32) % mod)
-        out = []
-        for v in self._xof_uint32_stream(k_bytes, label):
-            if v < limit:
-                out.append(v % mod)
-                if len(out) >= count:
-                    break
-        return out
-
-    def _negacyclic_convolve(self, a, b):
-        # Negacyclic convolution: mod x^N + 1 to match get_sample().
-        conv = np.convolve(a, b)
-        n = len(a)
-        res = conv[:n].astype(np.int64, copy=True)
-        tail = conv[n:]
-        if tail.size:
-            res[:tail.size] -= tail
-        return res % self.Q
-
-    def _maclaurin_obfuscate(self, s, k_bytes):
-        s = s.astype(np.int64)
-        s_prime = np.zeros_like(s, dtype=np.int64)
-        coeffs = {}
-        coeff_idx = self._xof_choice_indices(
-            k_bytes, b"coeff", len(self.hallucination_degrees), len(self.hallucination_coeff_choices)
-        )
-        for d in self.hallucination_degrees:
-            idx = coeff_idx.pop(0)
-            coeffs[d] = int(self.hallucination_coeff_choices[idx])
-            if d == 1:
-                term = s.copy()
-            else:
-                term = s.copy()
-                for _ in range(d - 1):
-                    term = self._negacyclic_convolve(term, s)
-            s_prime = (s_prime + coeffs[d] * term) % self.Q
-        return s_prime, coeffs
 
     def generate(self, rng, idx, currN=-1):
         if self.reuse:

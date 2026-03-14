@@ -126,10 +126,3 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
-
-# Checkpoints and large model dirs (ignored)
-checkpoint/
-checkpoints/
-notebooks/checkpoints/
-
-logs/
