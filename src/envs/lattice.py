@@ -231,7 +231,7 @@ class LatticeEnvironment(object):
             shuffle=False,
             collate_fn=(dataset.collate_fn if params.export_data is False else dataset.collate_fn_export),
         )
-
+# 생성 명령어 칠때 필요한 인자
     @staticmethod
     def register_args(parser):
         """
